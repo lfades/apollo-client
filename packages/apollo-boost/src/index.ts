@@ -3,7 +3,7 @@ export * from 'apollo-client';
 export * from 'apollo-link';
 export * from 'apollo-cache-inmemory';
 
-import { Operation, ApolloLink, Observable } from 'apollo-link';
+import { Operation, ApolloLink, Observable, split } from 'apollo-link';
 import { HttpLink } from 'apollo-link-http';
 import { withClientState, ClientStateConfig } from 'apollo-link-state';
 import { onError, ErrorLink } from 'apollo-link-error';
@@ -11,12 +11,14 @@ import { onError, ErrorLink } from 'apollo-link-error';
 import { InMemoryCache, CacheResolverMap } from 'apollo-cache-inmemory';
 import gql from 'graphql-tag';
 import ApolloClient from 'apollo-client';
+import { getMainDefinition } from 'apollo-utilities';
 
 export { gql, InMemoryCache, HttpLink };
 
 export interface PresetConfig {
   request?: (operation: Operation) => Promise<void>;
   uri?: string;
+  ws: ApolloLink | (() => ApolloLink)
   fetchOptions?: HttpLink.Options;
   clientState?: ClientStateConfig;
   onError?: ErrorLink.ErrorHandler;
@@ -73,18 +75,37 @@ export default class DefaultClient<TCache> extends ApolloClient<TCache> {
           })
         : false;
 
+    const wsLink =
+      config && config.ws
+        ? typeof config.ws === 'function'
+          ? typeof window !== 'undefined' && config.ws() || false
+          : config.ws
+        : false
+
     const httpLink = new HttpLink({
       uri: (config && config.uri) || '/graphql',
       fetchOptions: (config && config.fetchOptions) || {},
       credentials: 'same-origin',
     });
 
-    const link = ApolloLink.from([
+    let link = ApolloLink.from([
       errorLink,
       requestHandler,
       stateLink,
       httpLink,
     ].filter(x => !!x) as ApolloLink[]);
+
+    link = wsLink
+      ? split(
+          ({ query }) => {
+          // split based on operation type
+            const definition = getMainDefinition(query);
+            return definition.kind === 'OperationDefinition' && definition.operation === 'subscription'
+          },
+          wsLink,
+          link
+        )
+      : link;
 
     // super hacky, we will fix the types eventually
     super({ cache, link } as any);
